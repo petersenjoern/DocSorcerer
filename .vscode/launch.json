@@ -5,10 +5,18 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python: indexing.py",
+            "name": "indexing.py",
             "type": "python",
             "request": "launch",
             "program": "${workspaceFolder}/src/indexing.py",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "app.py",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/app.py",
             "console": "integratedTerminal",
             "justMyCode": true
         }
