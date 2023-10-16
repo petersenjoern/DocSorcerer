@@ -21,5 +21,8 @@ sentence-transformers==2.2.2
 # api
 fastapi==0.103.2
 
+# frontend
+streamlit==1.27.2
+
 ## llama-cpp-python
 # CMAKE_ARGS="-DLLAMA_CUBLAS=on" FORCE_CMAKE=1 pip install llama-cpp-python==0.2.11 --force-reinstall --upgrade 
