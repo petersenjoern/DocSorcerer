@@ -87,7 +87,7 @@ def run_query_engine(question: str) -> AsyncGenerator:
     query_engine = query_engines["vector_indices_and_query_engine"]
     response_iter = query_engine.query(question)
     for text in response_iter.response_gen:
-        yield f"data: {text}\n\n"
+        yield f"{text}"
 
 @app.get("/ask")
 async def question_documents(question: str) -> StreamingResponse:
