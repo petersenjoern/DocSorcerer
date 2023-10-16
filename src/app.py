@@ -1,6 +1,10 @@
 """App to Q&A/ Chat with documents."""
 
-
+from typing import AsyncGenerator
+import uvicorn
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from langchain.embeddings import HuggingFaceEmbeddings
 from llama_index import LangchainEmbedding, get_response_synthesizer, load_indices_from_storage
 from llama_index.retrievers import VectorIndexRetriever
@@ -13,8 +17,8 @@ from indexing import (CONTEXT_WINDOW, EMBED_MODEL_NAME,
                     MODEL_PATH, NUM_OUTPUT, WEAVIATE_HOST, WEAVIATE_PORT, 
                     get_llama2, set_service_ctx, set_storage_ctx)
 
-
-if __name__ == "__main__":
+def load_indices_and_query_engine():
+    """Load llamaindex service and storage context, intiate query engine"""
 
     llama_debug = LlamaDebugHandler(print_trace_on_end=True)
     callback_manager = CallbackManager([llama_debug])
@@ -50,7 +54,7 @@ if __name__ == "__main__":
         service_context=service_context,
         streaming=True,
         use_async=True,
-        response_mode=ResponseMode.COMPACT # alternatives: COMPACT
+        response_mode=ResponseMode.COMPACT
     )
 
     # assemble query engine
@@ -61,7 +65,36 @@ if __name__ == "__main__":
             SimilarityPostprocessor(similarity_cutoff=0.7)
         ]
     )
+    return query_engine
 
 
-response = query_engine.query("what is the research paper about?")
-response.print_response_stream()
+query_engines = {}
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastApi lifespan - code that is executed before the application starts up."""
+
+    query_engines["vector_indices_and_query_engine"] = load_indices_and_query_engine()
+    yield
+    # Clean up and release resources
+    query_engines.clear()
+
+app = FastAPI(lifespan=lifespan)
+
+def run_query_engine(question: str) -> AsyncGenerator:
+    """Run query engine with question"""
+
+    query_engine = query_engines["vector_indices_and_query_engine"]
+    response_iter = query_engine.query(question)
+    for text in response_iter.response_gen:
+        yield f"data: {text}\n\n"
+
+@app.get("/ask")
+async def question_documents(question: str) -> StreamingResponse:
+    """API endpoint to stream query responses"""
+
+    return StreamingResponse(run_query_engine(question), media_type="text/event-stream")
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)

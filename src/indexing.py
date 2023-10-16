@@ -39,6 +39,7 @@ from llama_index.storage.storage_context import StorageContext
 from llama_index.text_splitter.token_splitter import TokenTextSplitter
 from llama_index.vector_stores.weaviate import WeaviateVectorStore
 
+# TODO: move most of these to a cfg file
 # LLM Model CFG
 MODEL_NAME = "llama-2-13b-chat.gguf"
 MODEL_PATH = str(Path.cwd().joinpath("models", MODEL_NAME))
