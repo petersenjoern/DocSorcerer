@@ -1,0 +1,1 @@
+PYTHONPATH=/path/to/DocSorcerer/src:/path/to/DocSorcerer/src/ingestion:/path/to/DocSorcerer/src/api:
