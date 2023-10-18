@@ -1,6 +1,5 @@
 """Frontend for DocScorcerer backend."""
 
-import json
 from typing import Generator
 import streamlit as st
 import requests
