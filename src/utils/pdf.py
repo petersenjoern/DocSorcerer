@@ -81,8 +81,8 @@ class PDFReaderCustom(BaseReader):
                     pdf_dir=pdf_dir, work_dir=work_dir
                 )
             
-            if not pdf_pages_count == num_pages:
-                raise Exception("Mismatch between page-count with pypdf and fitz")
+                if not pdf_pages_count == num_pages:
+                    raise Exception("Mismatch between page-count with pypdf and fitz")
 
             # pdf
             docs = []

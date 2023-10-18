@@ -5,7 +5,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "indexing.py",
+            "name": "indexing",
             "type": "python",
             "request": "launch",
             "program": "${workspaceFolder}/src/indexing.py",
@@ -13,12 +13,22 @@
             "justMyCode": true
         },
         {
-            "name": "app.py",
+            "name": "app",
             "type": "python",
             "request": "launch",
             "program": "${workspaceFolder}/src/app.py",
             "console": "integratedTerminal",
             "justMyCode": true
+        },
+        {
+            "name": "webapp",
+            "type": "python",
+            "request": "launch",
+            "module": "streamlit",
+            "args": [
+                "run",
+                "src/webapp.py"
+            ]
         }
     ]
 }

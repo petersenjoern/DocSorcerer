@@ -1,5 +1,7 @@
 """Frontend for DocScorcerer backend."""
 
+import json
+from typing import Generator
 import streamlit as st
 import requests
 
@@ -8,12 +10,14 @@ PAGE_TITLE: str = "Welcome to the DocScorcerer"
 PAGE_ICON: str = "🤖"
 
 
-def doc_scorcerer_ask_question(session: requests.Session, question: str) -> str:
+def doc_scorcerer_ask_question(session: requests.Session, question: str) -> Generator[str, str, None]:
     """Query backend API"""
 
-    response = session.get(url=f"http://localhost:8000/ask?question={question}")
+    response = session.get(url=f"http://localhost:8000/ask?question={question}", stream=True)
     response.raise_for_status()
-    return response.text
+    for line in response.iter_content(chunk_size=1024):
+        if line:
+            yield line.decode("utf-8")
 
 
 
@@ -45,7 +49,11 @@ if question := st.chat_input("Type your question here, and let the magic happen!
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
         latest_state_message = st.session_state.messages[-1]["content"]
-        full_response = doc_scorcerer_ask_question(session=session, question=latest_state_message)
-        message_placeholder.markdown(full_response + "▌")
+        full_response = []
+        for response in doc_scorcerer_ask_question(session=session, question=latest_state_message):
+            full_response.append(response)
+            result = "".join(full_response).strip()
+            message_placeholder.markdown(result + "▌")
+        message_placeholder.markdown(result)
     # Add assistant response to chat history
-    st.session_state.messages.append({"role": "assistant", "content": full_response})
+    st.session_state.messages.append({"role": "assistant", "content": result})

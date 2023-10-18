@@ -12,7 +12,7 @@ from utils.pdf import PDFReaderCustom
 
 from llama_index.embeddings.utils import EmbedType
 from llama_index.llms.custom import CustomLLM
-from llama_index import (ServiceContext, SimpleDirectoryReader, VectorStoreIndex, get_response_synthesizer)
+from llama_index import (ServiceContext, SimpleDirectoryReader, SummaryIndex, VectorStoreIndex, get_response_synthesizer)
 from llama_index.callbacks import (CallbackManager,LlamaDebugHandler)
 from llama_index.embeddings.langchain import LangchainEmbedding
 from llama_index.indices.loading import load_indices_from_storage
@@ -32,6 +32,7 @@ from llama_index.node_parser.extractors.metadata_extractors import \
     DEFAULT_ENTITY_MODEL
 from llama_index.readers.base import BaseReader
 from llama_index.readers.file.image_reader import ImageReader
+from llama_index.readers.file.docs_reader import DocxReader
 from llama_index.schema import Document, TextNode
 from llama_index.storage.docstore import MongoDocumentStore
 from llama_index.storage.index_store import MongoIndexStore
@@ -44,14 +45,14 @@ from llama_index.vector_stores.weaviate import WeaviateVectorStore
 MODEL_NAME = "llama-2-13b-chat.gguf"
 MODEL_PATH = str(Path.cwd().joinpath("models", MODEL_NAME))
 CONTEXT_WINDOW = 3800
-NUM_OUTPUT = 256
-CHUNK_SIZE = 400
+NUM_OUTPUT = 300
+CHUNK_SIZE = 1024
 
 # Embedding Model
 EMBED_MODEL_NAME = "BAAI/bge-small-en"
 
 # Data
-DATA_PATH = str(Path.cwd().joinpath("data", "LessIsMoreForAlignment"))
+DATA_PATH = str(Path.cwd().joinpath("data", "Productivity"))
 
 # Weaviate
 WEAVIATE_HOST = "localhost"
@@ -79,7 +80,8 @@ FILE_READER_CLS: Dict[str, Type[BaseReader]] = {
     ".pdf": PDFReaderCustom(image_loader=ImageReaderForFlatPDF(text_type="plain_text")),
     ".jpg": ImageReader,
     ".png": ImageReader,
-    ".jpeg": ImageReader
+    ".jpeg": ImageReader,
+    ".docx": DocxReader,
 }
 
 
@@ -115,9 +117,10 @@ def main() -> None:
 
 
         # build vector index
-        response_synthesizer = get_response_synthesizer(
-            response_mode="tree_summarize", service_context=service_context, use_async=True
-        )
+        # It is cheap to index and retrieve the data. We can also reuse the index to answer multiple questions without sending 
+        # the documents to LLM many times. The disadvantage is that the quality of the answers depends on the quality of the embeddings.
+        # If the embeddings are not good enough, the LLM will not be able to generate a good response. 
+        response_synthesizer = get_response_synthesizer(service_context=service_context, use_async=True)
         storage_indices = []
         vector_store_index = VectorStoreIndex(
             nodes=nodes_to_insert,
@@ -128,6 +131,26 @@ def main() -> None:
         )
         storage_indices.extend([vector_store_index])
 
+        # may be a good choice when we have a few questions to answer using a handful of documents.
+        # It may give us the best answer because AI will get all the available data, but it is also quite expensive.
+        # summary_index = SummaryIndex(
+        #     nodes=nodes_to_insert,
+        #     storage_context=storage_context,
+        #     service_context=service_context,
+        #     response_synthesizer=response_synthesizer,
+        #     show_progress=True
+        # )
+        # storage_indices.extend([summary_index])
+
+
+def custom_completion_to_prompt(completion: str) -> str:
+    return completion_to_prompt(
+        completion,
+        system_prompt=(
+            "You are a Q&A assistant. Your goal is to answer questions as "
+            "accurately as possible is the instructions and context provided."
+        ),
+    )
 
 def get_llama2(model_path:str, max_new_tokens:int=256, model_temperature: int=0.1, context_window:int=3800) -> CustomLLM:
     """Init llama-cpp-python https://github.com/abetlen/llama-cpp-python via llama_index.llms"""
@@ -140,7 +163,7 @@ def get_llama2(model_path:str, max_new_tokens:int=256, model_temperature: int=0.
         max_new_tokens=max_new_tokens,
         model_kwargs={"n_gpu_layers": 50, "n_batch": 8, "use_mlock": False},
         messages_to_prompt=messages_to_prompt,
-        completion_to_prompt=completion_to_prompt,
+        completion_to_prompt=custom_completion_to_prompt,
         verbose=True)
 
 def set_service_ctx(llm: CustomLLM, embed_model: EmbedType, callback_manager: CallbackManager) -> ServiceContext:
@@ -238,7 +261,7 @@ def llama_index_preprocessing(documents: List[Document], llm: LLM) -> List[TextN
             #TitleExtractor(nodes=5, llm=llm),
             #QuestionsAnsweredExtractor(questions=2, llm=llm),
             #SummaryExtractor(summaries=["self"], llm=llm),
-            KeywordExtractor(keywords=3, llm=llm),
+            #KeywordExtractor(keywords=3, llm=llm),
             EntityExtractor(prediction_threshold=0.5, model_name=DEFAULT_ENTITY_MODEL, device="cuda"),
         ],
         in_place=True,
