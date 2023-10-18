@@ -3,15 +3,16 @@
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Type
+from typing import Dict, List, Type, Union
 
 import weaviate
 from langchain.embeddings import HuggingFaceEmbeddings
 from llama_hub.file.image.base import ImageReader as ImageReaderForFlatPDF
 from utils.pdf import PDFReaderCustom
-
+from llama_index.prompts import PromptTemplate
 from llama_index.embeddings.utils import EmbedType
 from llama_index.llms.custom import CustomLLM
+from llama_index.llms import HuggingFaceLLM
 from llama_index import (ServiceContext, SimpleDirectoryReader, SummaryIndex, VectorStoreIndex, get_response_synthesizer)
 from llama_index.callbacks import (CallbackManager,LlamaDebugHandler)
 from llama_index.embeddings.langchain import LangchainEmbedding
@@ -44,12 +45,23 @@ from llama_index.vector_stores.weaviate import WeaviateVectorStore
 # LLM Model CFG
 MODEL_NAME = "llama-2-13b-chat.gguf"
 MODEL_PATH = str(Path.cwd().joinpath("models", MODEL_NAME))
-CONTEXT_WINDOW = 3800
-NUM_OUTPUT = 300
+CONTEXT_WINDOW = 3500
+NUM_OUTPUT = 596
 CHUNK_SIZE = 1024
 
 # Embedding Model
 EMBED_MODEL_NAME = "BAAI/bge-small-en"
+EMBED_MODEL = LangchainEmbedding(
+    HuggingFaceEmbeddings(
+        model_name=EMBED_MODEL_NAME,
+        model_kwargs={"device": "cuda"},
+        encode_kwargs={'normalize_embeddings': False}
+    )
+)
+
+# LlamaIndex Callback
+CALLBACK_MANAGER = CallbackManager([LlamaDebugHandler(print_trace_on_end=True)])
+
 
 # Data
 DATA_PATH = str(Path.cwd().joinpath("data", "Productivity"))
@@ -89,16 +101,21 @@ def main() -> None:
     """Entry point for indexing"""
     
     # llm defintion
-    llama_debug = LlamaDebugHandler(print_trace_on_end=True)
-    callback_manager = CallbackManager([llama_debug])
 
-    llm = get_llama2(model_path=MODEL_PATH,max_new_tokens=NUM_OUTPUT,model_temperature=0.1,context_window=CONTEXT_WINDOW)
-    embed_model = LangchainEmbedding(HuggingFaceEmbeddings(
-            model_name=EMBED_MODEL_NAME,
-            model_kwargs={"device": "cuda"},
-            encode_kwargs={'normalize_embeddings': False}
-            ))
-    service_context = set_service_ctx(llm=llm, embed_model=embed_model, callback_manager=callback_manager)
+    llm = get_llama2(
+        model_path=MODEL_PATH,
+        max_new_tokens=NUM_OUTPUT,
+        model_temperature=0.1,
+        context_window=CONTEXT_WINDOW
+    )
+    #llm = get_huggingface_llm(
+    #    model_name="Writer/camel-5b-hf",
+    #    max_new_tokens=NUM_OUTPUT,
+    #    model_temperature=0.1,
+    #    context_window=CONTEXT_WINDOW
+    #)
+    
+    service_context = set_service_ctx(llm=llm, embed_model=EMBED_MODEL_NAME, callback_manager=CALLBACK_MANAGER)
 
     weaviate_client = weaviate.Client(url=f"http://{WEAVIATE_HOST}:{WEAVIATE_PORT}")
     storage_context = set_storage_ctx(weaviate_client)
@@ -166,7 +183,31 @@ def get_llama2(model_path:str, max_new_tokens:int=256, model_temperature: int=0.
         completion_to_prompt=custom_completion_to_prompt,
         verbose=True)
 
-def set_service_ctx(llm: CustomLLM, embed_model: EmbedType, callback_manager: CallbackManager) -> ServiceContext:
+def get_huggingface_llm(model_name:str, max_new_tokens:int=256, model_temperature: int=0.1, context_window:int=2048) -> HuggingFaceLLM:
+    """Return a hugginface LLM"""
+
+    query_wrapper_prompt = PromptTemplate(
+        "Below is an instruction that describes a task. "
+        "Write a response that appropriately completes the request.\n\n"
+        "### Instruction:\n{query_str}\n\n### Response:"
+    )
+
+    return HuggingFaceLLM(
+        model_name=model_name,
+        tokenizer_name=model_name,
+        context_window=context_window,
+        max_new_tokens=max_new_tokens,
+        generate_kwargs={"temperature": model_temperature, "do_sample": True},
+        device_map="auto",
+        tokenizer_kwargs={"max_length": 2048},
+        query_wrapper_prompt=query_wrapper_prompt,
+        model_kwargs={"max_memory": {0: "18GB"}, "offload_folder": "/tmp/offload"}
+    )
+
+
+def set_service_ctx(
+        llm: Union[CustomLLM, HuggingFaceLLM],
+        embed_model: EmbedType, callback_manager: CallbackManager) -> ServiceContext:
     """Set llamaindex service context"""
     
     service_context = ServiceContext.from_defaults(
