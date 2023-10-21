@@ -1,10 +1,11 @@
 """Indexing documents with llamaindex"""
 
+import itertools
 import logging
 import sys
 from pathlib import Path
 from typing import Dict, List, Type, Union
-
+import asyncio
 import weaviate
 from langchain.embeddings import HuggingFaceEmbeddings
 from llama_hub.file.image.base import ImageReader as ImageReaderForFlatPDF
@@ -22,6 +23,7 @@ from llama_index.llms import LlamaCPP
 from llama_index.llms.base import LLM
 from llama_index.llms.llama_utils import (completion_to_prompt,
                                           messages_to_prompt)
+from llama_index.schema import IndexNode
 from llama_index.node_parser import SimpleNodeParser
 from llama_index.node_parser.extractors import (EntityExtractor,
                                                 KeywordExtractor,
@@ -64,7 +66,7 @@ CALLBACK_MANAGER = CallbackManager([LlamaDebugHandler(print_trace_on_end=True)])
 
 
 # Data
-DATA_PATH = str(Path.cwd().joinpath("data", "Productivity"))
+DATA_PATH = Path.cwd().joinpath("data", "Leisure")
 
 # Weaviate
 WEAVIATE_HOST = "localhost"
@@ -80,8 +82,9 @@ MONGO_DOC_STORE_NAMESPACE = "DocStore"
 
 # Flags
 ## TODO: use CLI flags instead
-RETRAIN = True
+REINDEX = True
 PURGE_DATABASE = True
+GENERATE_DOCUMENT_SUMMARY = True
 
 
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
@@ -115,22 +118,74 @@ def main() -> None:
     #    context_window=CONTEXT_WINDOW
     #)
     
-    service_context = set_service_ctx(llm=llm, embed_model=EMBED_MODEL_NAME, callback_manager=CALLBACK_MANAGER)
+    service_context = set_service_ctx(llm=llm, embed_model=EMBED_MODEL, callback_manager=CALLBACK_MANAGER)
 
     weaviate_client = weaviate.Client(url=f"http://{WEAVIATE_HOST}:{WEAVIATE_PORT}")
     storage_context = set_storage_ctx(weaviate_client)
     storage_indices = load_indices_from_storage(storage_context=storage_context, service_context=service_context)
 
-    if RETRAIN:
+    if REINDEX:
         documents = load_data()
 
         if PURGE_DATABASE:
             purge_vector_store(weaviate_client, WEAVIATE_INDEX_NAME)
-        all_doc_ids_memory = [document.doc_id for document in documents]
-        all_doc_ids_store = get_doc_ids_in_store(weaviate_client, WEAVIATE_INDEX_NAME)
-        doc_ids_to_insert = records_to_insert(all_doc_ids_memory, all_doc_ids_store)
-        docs_to_insert = filter_documents_by_doc_ids(documents, doc_ids_to_insert)
-        nodes_to_insert=llama_index_preprocessing(docs_to_insert, llm=llm)
+
+        if GENERATE_DOCUMENT_SUMMARY:
+            nodes_to_insert = []
+            vector_query_engines = {}
+            vector_retrievers = {}
+            
+            # group documents together (there are multiple Document objects per 
+            # PDF because each PDF page is a Document Object) 
+            documents_grouped_by_title_iter = itertools.groupby(documents, lambda doc: Path(doc.node_id).stem)
+            for document_title, documents_for_title_iter in documents_grouped_by_title_iter:
+                documents_for_title = list(documents_for_title_iter)
+
+                # build vector index
+                vector_index = VectorStoreIndex.from_documents(
+                    documents=documents_for_title,
+                    service_context=service_context,
+                    storage_context=storage_context
+                )
+                # define query engines
+                vector_query_engines[document_title] = vector_index.as_query_engine()
+                vector_retrievers[document_title] = vector_index.as_retriever()
+
+                # save summaries if not exists
+                out_path = DATA_PATH.joinpath("summaries") / f"{document_title}.txt"
+                if not out_path.exists():
+                    # use LLM-generated summary
+                    summary_index = SummaryIndex.from_documents(
+                        documents=documents_for_title,
+                        service_context=service_context,
+                        storage_context=storage_context
+                    )
+
+                    summarizer = summary_index.as_query_engine(
+                        response_mode="tree_summarize"
+                    )
+                    response = summarizer.query(
+                        f"Give me a summary of {document_title}"
+                    )
+
+                    document_summary = response.response
+                    DATA_PATH.joinpath("summaries").mkdir(exist_ok=True)
+                    with open(out_path, "w") as fp:
+                        fp.write(document_summary)
+                else:
+                    with open(out_path, "r") as fp:
+                        document_summary = fp.read()
+
+                print(f"**Summary for {document_title}: {document_summary}")
+                node = IndexNode(text=document_summary, index_id=document_title)
+                nodes_to_insert.append(node)
+
+        else:
+            all_doc_ids_memory = [document.doc_id for document in documents]
+            all_doc_ids_store = get_doc_ids_in_store(weaviate_client, WEAVIATE_INDEX_NAME)
+            doc_ids_to_insert = records_to_insert(all_doc_ids_memory, all_doc_ids_store)
+            docs_to_insert = filter_documents_by_doc_ids(documents, doc_ids_to_insert)
+            nodes_to_insert=llama_index_preprocessing(docs_to_insert, llm=llm)
 
 
         # build vector index
@@ -267,7 +322,7 @@ def load_data():
     """Custom loading data into llama index documents class"""
 
     documents = SimpleDirectoryReader(
-        input_dir=DATA_PATH,
+        input_dir=str(DATA_PATH),
         filename_as_id=True,
         recursive=True,
         file_extractor=FILE_READER_CLS).load_data()
