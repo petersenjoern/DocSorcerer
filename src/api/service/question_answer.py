@@ -4,7 +4,18 @@ from typing import AsyncGenerator, List
 from llama_index.response.schema import StreamingResponse
 from llama_index.schema import NodeWithScore
 
-def stream_response(response_iter: StreamingResponse) -> AsyncGenerator:
+
+import repository.question_answer as repository_question_answer
+
+
+def answer_question(query_engine, question: str) -> AsyncGenerator:
+    """Answer a question by calling the """
+
+    response_iter = repository_question_answer.engine_run_query_with_question(query_engine, question)
+    return _stream_response(response_iter)
+
+
+def _stream_response(response_iter: StreamingResponse) -> AsyncGenerator:
     """Run query engine with question"""
 
     for text in response_iter.response_gen:
