@@ -6,15 +6,16 @@ import logging
 import pickle
 import sys
 import copy
+import weaviate
+
 from pathlib import Path
 from typing import Dict, List, Type, Union
 from pymongo import MongoClient
 
-import weaviate
 from langchain.embeddings import HuggingFaceEmbeddings
 from llama_hub.file.image.base import ImageReader as ImageReaderForFlatPDF
 from models.language_models import get_llama2
-from llamaindex_storage import MONGO_DB_NAME, MONGO_HOST, MONGO_PORT, WEAVIATE_INDEX_NAME, set_storage_ctx
+from llamaindex_storage import MONGO_HOST, MONGO_PORT, WEAVIATE_INDEX_NAME, purge_all_indices, set_storage_ctx
 from utils.pdf import PDFReaderCustom
 from llama_index.schema import IndexNode
 
@@ -173,108 +174,14 @@ def main() -> None:
     all_nodes: List[Union[IndexNode, TextNode]] = indexed_nodes + nodes_to_be_indexed
     save_node_references(NODE_REFERENCES_PATH, all_nodes)
 
-def separate_nodes_by_index_status(base_nodes: List[TextNode], base_nodes_metadata_dicts: List[Dict[str, str]]):
-    """By loading the existing node references, calculate which (new) nodes have to be indexed."""
-    indexed_nodes: List[Union[IndexNode, TextNode]] =[]
-    if not PURGE_ALL:
-        try:
-            indexed_nodes = load_node_references(NODE_REFERENCES_PATH)
-        except FileNotFoundError:
-            logging.warning("You have screwed up and lost your references. ",
-                            "The retrieval of references from the DB is not supported yet. ",
-                            "Delete your base_nodes_metadata_dicts file and start over again.")
-    indexed_nodes_ids = [n.id_ for n in indexed_nodes]
-    nodes_to_be_indexed = prepare_nodes_to_be_indexed(base_nodes, base_nodes_metadata_dicts, indexed_nodes_ids)
-    return indexed_nodes,nodes_to_be_indexed
-
-def prepare_nodes_to_be_indexed(base_nodes: List[TextNode], base_nodes_metadata_dicts: List[Dict[str, str]],
-                                indexed_nodes_ids: List[str]) -> List[Union[TextNode, IndexNode]]:
-    """Add metadata (IndexNode) to all nodes that still need to be indexed.
-    Avoid adding duplicated metadata by checking the indexed node ids"""
-    nodes_to_be_indexed = copy.deepcopy(base_nodes)
-    nodes_to_be_indexed_ids = [n.id_ for n in nodes_to_be_indexed]
-    for metadata_dict in base_nodes_metadata_dicts:
-        # only add metadata to the Index for documents/nodes that are in memory
-        if (metadata_dict["id_"] not in indexed_nodes_ids) and (metadata_dict["id_"] in nodes_to_be_indexed_ids):
-            inode_q = IndexNode(
-                text=metadata_dict["questions_this_excerpt_can_answer"],
-                index_id=metadata_dict["id_"]
-            )
-            inode_s = IndexNode(
-                text=metadata_dict["section_summary"],
-                index_id=metadata_dict["id_"]
-            )
-            nodes_to_be_indexed.extend([inode_q, inode_s])
-    return nodes_to_be_indexed
-
-def generate_metadata_from_base_nodes(base_nodes: List[TextNode], metadata_extractor: MetadataExtractor) -> List[Dict[str, str]]:
-    """Generate metadata (with help of an LLM) from base_nodes and append to a metadata dictionary."""
-
-    base_nodes_metadata_dicts = []
-    # we always want to append new metadata (never delete!), as we will match the metadata with the UUID ("id_" field)
-    try:
-        base_nodes_metadata_dicts=load_metadata_dicts(path=DATA_METADATA_PATH)
-    except FileNotFoundError:
-        logging.warning("You may have screwed up your references. ",
-                        "If this is the first time running the indexing you may be good, ",
-                        "Check if you have already a base_nodes_metadata_dicts in your DATA_METADATA_PATH.")
-
-    base_nodes_metadata_dicts = extract_metadata_from_nodes(base_nodes, metadata_extractor, base_nodes_metadata_dicts)
-    save_metadata_dicts(path=DATA_METADATA_PATH, dicts=base_nodes_metadata_dicts)
-    return base_nodes_metadata_dicts
-
-def extract_metadata_from_nodes(base_nodes: List[TextNode], metadata_extractor: MetadataExtractor,
-                                base_nodes_metadata_dicts: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    """For every base_node extract metadata and append additional information, such as the id_ from the base_node to it."""
-    
-    for base_node in base_nodes:
-        # extractor.extract(nodes) is only return the extraction result, but loosing its metadata
-        # this loop is preserving metadata that is required later on (matching on node["id_"], required to be UUID)
-        metadata_dicts = metadata_extractor.extract([base_node])
-        metadata_dicts[0]["id_"] = base_node.id_
-        metadata_dicts[0]["ref_doc_id"] = base_node.ref_doc_id
-        base_nodes_metadata_dicts.extend(metadata_dicts)
-    return base_nodes_metadata_dicts
-
-def documents_to_insert(weaviate_client: weaviate.Client, documents: List[Document]) -> List[Document]:
-    """Based on doc_ids in memory and doc_ids in index, only return documents to be inserted."""
-    all_doc_ids_memory = [document.doc_id for document in documents]
-    all_doc_ids_store = get_doc_ids_in_store(weaviate_client, WEAVIATE_INDEX_NAME)
-    doc_ids_to_insert = records_to_insert(all_doc_ids_memory, all_doc_ids_store)
-    docs_to_insert = filter_documents_by_doc_ids(documents, doc_ids_to_insert)
-    return docs_to_insert
-
-def purge_all_indices(weaviate_client, mongodb_client):
-    """Purge all indices and document references."""
-
-    purge_weaviate_schema(weaviate_client, WEAVIATE_INDEX_NAME)
-    purge_mongo_database(mongodb_client, MONGO_DB_NAME)
 
 
-def save_node_references(path: Path, nodes: List[Union[TextNode, IndexNode]]) -> None:
-    """Save dictionary with reference objects under path"""
-    with open(path, 'wb') as handle:
-        pickle.dump(nodes, handle, protocol=pickle.HIGHEST_PROTOCOL)
+def purge_node_references(path: Path) -> None:
+    """Delete the pickle file on the path"""
 
-def load_node_references(path: Path) -> List[Union[TextNode, IndexNode]]:
-    """Load dictionary with reference objects from path"""
-    with open(path, 'rb') as handle:
-        return pickle.load(handle)
+    if path.exists() and path.suffix == ".pickle":
+        path.unlink()
 
-
-def save_metadata_dicts(path: Path, dicts: List[Dict[str, str]]) -> None:
-    """Save list of dictionaries under path"""
-    with open(path, "w") as fp:
-        for m in dicts:
-            fp.write(json.dumps(m) + "\n")
-
-
-def load_metadata_dicts(path: str) -> List[Dict[str, str]]:
-    """Load list of dictionaries from path"""
-    with open(path, "r") as fp:
-        json_list = list(fp)
-        metadata_dicts = [json.loads(json_string) for json_string in json_list]
-        return metadata_dicts
 
 def load_data_from_path(input_dir: Path, collect_pages: bool=True) -> List[Document]:
     """Custom loading data into llama index documents class"""
@@ -310,16 +217,17 @@ def load_data_from_path(input_dir: Path, collect_pages: bool=True) -> List[Docum
     return documents_to_return
 
 
-def records_to_insert(inmemory_records: List[str], stored_records: List[str]) -> List[str]:
-    """Records not stored, to be inserted."""
-    return list(set(inmemory_records) - set(stored_records))
+def documents_to_insert(weaviate_client: weaviate.Client, documents: List[Document]) -> List[Document]:
+    """Based on doc_ids in memory and doc_ids in index, only return documents to be inserted."""
 
-def records_to_update(stored_records: List[str], inmemory_records: List[str]) -> List[str]:
-    """potential records to update."""
-    return list(set(stored_records).intersection(inmemory_records))
+    all_doc_ids_memory = [document.doc_id for document in documents]
+    all_doc_ids_store = _get_doc_ids_in_store(weaviate_client, WEAVIATE_INDEX_NAME)
+    doc_ids_to_insert = _records_to_insert(all_doc_ids_memory, all_doc_ids_store)
+    docs_to_insert = _filter_documents_by_doc_ids(documents, doc_ids_to_insert)
+    return docs_to_insert
 
 
-def get_doc_ids_in_store(client: weaviate.Client, class_name: str) -> List[str]:
+def _get_doc_ids_in_store(client: weaviate.Client, class_name: str) -> List[str]:
     """Return all doc ids in weaviate store"""
 
     try:
@@ -332,62 +240,117 @@ def get_doc_ids_in_store(client: weaviate.Client, class_name: str) -> List[str]:
     all_doc_ids_store = [i["properties"]["doc_id"] for i in all_objects_store["objects"]]
     return all_doc_ids_store
 
-def get_node_ids_in_store(client: weaviate.Client, class_name: str) -> List[str]:
-    """Return the node.id (also IndexNode/TextNode("id_") field) from weaviate store"""
 
-    try:
-        client.schema.get(class_name)
-    except weaviate.UnexpectedStatusCodeException:
-        return []
-    
-    all_objects_store = client.data_object.get(class_name=class_name)
-    all_node_ids_store = [i["properties"]["id"] for i in all_objects_store["objects"]]
-    return all_node_ids_store
+def _records_to_insert(inmemory_records: List[str], stored_records: List[str]) -> List[str]:
+    """Records not stored, to be inserted."""
 
-def get_text_nodes_from_store(client: weaviate.Client, class_name: str) -> List[TextNode]:
-    """Return all TextNodes from weaviate store"""
-
-    class_properties = ["doc_id", "document_id", "ref_doc_id", "text"]
-    batch_size = 50
-    cursor=None
-    query = (
-        client.query.get(class_name, class_properties)
-        # Optionally retrieve the vector embedding by adding `vector` to the _additional fields
-        #.with_additional(["id vector"])
-        .with_limit(batch_size)
-    )
-
-    if cursor is not None:
-        res = query.with_after(cursor).do()
-    else:
-        res = query.do()
-    
-    return res
-
-def purge_weaviate_schema(client: weaviate.Client, class_name: str):
-    """Purge vector store for a schema (class name)"""
-    try:
-        client.schema.delete_class(class_name)
-    except:
-        pass
-
-def purge_mongo_database(client: MongoClient, database_name: str) -> None:
-    """Purge database within MongoDB"""
-
-    client.drop_database(database_name)
-
-def purge_node_references(path: Path) -> None:
-    """Delete the pickle file on the path"""
-
-    if path.exists() and path.suffix == ".pickle":
-        path.unlink()
+    return list(set(inmemory_records) - set(stored_records))
 
 
-def filter_documents_by_doc_ids(documents: List[Document], doc_ids: List[str]) -> List[Document]:
+def _filter_documents_by_doc_ids(documents: List[Document], doc_ids: List[str]) -> List[Document]:
     """Filter documents by doc ids"""
 
     result = filter(lambda x: x.doc_id in doc_ids, documents)
     return list(result)
+
+
+def generate_metadata_from_base_nodes(base_nodes: List[TextNode], metadata_extractor: MetadataExtractor) -> List[Dict[str, str]]:
+    """Generate metadata (with help of an LLM) from base_nodes and append to a metadata dictionary."""
+
+    base_nodes_metadata_dicts = []
+    # we always want to append new metadata (never delete!), as we will match the metadata with the UUID ("id_" field)
+    try:
+        base_nodes_metadata_dicts=_load_metadata_dicts(path=DATA_METADATA_PATH)
+    except FileNotFoundError:
+        logging.warning("You may have screwed up your references. ",
+                        "If this is the first time running the indexing you may be good, ",
+                        "Check if you have already a base_nodes_metadata_dicts in your DATA_METADATA_PATH.")
+
+    base_nodes_metadata_dicts = _extract_metadata_from_nodes(base_nodes, metadata_extractor, base_nodes_metadata_dicts)
+    _save_metadata_dicts(path=DATA_METADATA_PATH, dicts=base_nodes_metadata_dicts)
+    return base_nodes_metadata_dicts
+
+
+def _load_metadata_dicts(path: str) -> List[Dict[str, str]]:
+    """Load list of dictionaries from path"""
+
+    with open(path, "r") as fp:
+        json_list = list(fp)
+        metadata_dicts = [json.loads(json_string) for json_string in json_list]
+        return metadata_dicts
+
+
+def _extract_metadata_from_nodes(base_nodes: List[TextNode], metadata_extractor: MetadataExtractor,
+                                base_nodes_metadata_dicts: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """For every base_node extract metadata and append additional information, such as the id_ from the base_node to it."""
+    
+    for base_node in base_nodes:
+        # extractor.extract(nodes) is only return the extraction result, but loosing its metadata
+        # this loop is preserving metadata that is required later on (matching on node["id_"], required to be UUID)
+        metadata_dicts = metadata_extractor.extract([base_node])
+        metadata_dicts[0]["id_"] = base_node.id_
+        metadata_dicts[0]["ref_doc_id"] = base_node.ref_doc_id
+        base_nodes_metadata_dicts.extend(metadata_dicts)
+    return base_nodes_metadata_dicts
+
+
+def _save_metadata_dicts(path: Path, dicts: List[Dict[str, str]]) -> None:
+    """Save list of dictionaries under path"""
+
+    with open(path, "w") as fp:
+        for m in dicts:
+            fp.write(json.dumps(m) + "\n")
+
+
+def separate_nodes_by_index_status(base_nodes: List[TextNode], base_nodes_metadata_dicts: List[Dict[str, str]]):
+    """By loading the existing node references, calculate which (new) nodes have to be indexed."""
+
+    indexed_nodes: List[Union[IndexNode, TextNode]] =[]
+    if not PURGE_ALL:
+        try:
+            indexed_nodes = _load_node_references(NODE_REFERENCES_PATH)
+        except FileNotFoundError:
+            logging.warning("You have screwed up and lost your references. ",
+                            "The retrieval of references from the DB is not supported yet. ",
+                            "Delete your base_nodes_metadata_dicts file and start over again.")
+    indexed_nodes_ids = [n.id_ for n in indexed_nodes]
+    nodes_to_be_indexed = _prepare_nodes_to_be_indexed(base_nodes, base_nodes_metadata_dicts, indexed_nodes_ids)
+    return indexed_nodes,nodes_to_be_indexed
+
+def _load_node_references(path: Path) -> List[Union[TextNode, IndexNode]]:
+    """Load dictionary with reference objects from path"""
+
+    with open(path, 'rb') as handle:
+        return pickle.load(handle)
+
+
+def _prepare_nodes_to_be_indexed(base_nodes: List[TextNode], base_nodes_metadata_dicts: List[Dict[str, str]],
+                                indexed_nodes_ids: List[str]) -> List[Union[TextNode, IndexNode]]:
+    """Add metadata (IndexNode) to all nodes that still need to be indexed.
+    Avoid adding duplicated metadata by checking the indexed node ids"""
+    nodes_to_be_indexed = copy.deepcopy(base_nodes)
+    nodes_to_be_indexed_ids = [n.id_ for n in nodes_to_be_indexed]
+    for metadata_dict in base_nodes_metadata_dicts:
+        # only add metadata to the Index for documents/nodes that are in memory
+        if (metadata_dict["id_"] not in indexed_nodes_ids) and (metadata_dict["id_"] in nodes_to_be_indexed_ids):
+            inode_q = IndexNode(
+                text=metadata_dict["questions_this_excerpt_can_answer"],
+                index_id=metadata_dict["id_"]
+            )
+            inode_s = IndexNode(
+                text=metadata_dict["section_summary"],
+                index_id=metadata_dict["id_"]
+            )
+            nodes_to_be_indexed.extend([inode_q, inode_s])
+    return nodes_to_be_indexed
+
+
+def save_node_references(path: Path, nodes: List[Union[TextNode, IndexNode]]) -> None:
+    """Save dictionary with reference objects under path"""
+
+    with open(path, 'wb') as handle:
+        pickle.dump(nodes, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
 
 
 if __name__ == "__main__":

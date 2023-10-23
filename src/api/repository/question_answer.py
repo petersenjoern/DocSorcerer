@@ -4,7 +4,7 @@ from llama_index.response.schema import StreamingResponse
 from llama_index.query_engine import RetrieverQueryEngine
 from llama_index.indices.postprocessor.node import SimilarityPostprocessor
 import weaviate
-from ingestion.indexing import (CHUNK_SIZE, LLAMA_INDEX_CALLBACKS, EMBED_MODEL, NODE_REFERENCES_PATH, load_node_references)
+from ingestion.indexing import (CHUNK_SIZE, LLAMA_INDEX_CALLBACKS, EMBED_MODEL, NODE_REFERENCES_PATH, _load_node_references)
 from llama_index import  PromptHelper, ServiceContext, StorageContext, get_response_synthesizer, load_indices_from_storage
 from llama_index.retrievers import VectorIndexRetriever
 from llama_index.response_synthesizers.type import ResponseMode
@@ -63,11 +63,11 @@ def load_indices_and_query_engine() -> RetrieverQueryEngine:
     )
 
 
-    nodes_indexed = load_node_references(NODE_REFERENCES_PATH)
+    nodes_indexed = _load_node_references(NODE_REFERENCES_PATH)
     all_node_dict = {n.node_id: n for n in nodes_indexed}
     retriever_metadata = RecursiveRetriever(
         "vector",
-        retriever_dict={"vector": load_vector_index_retriever(service_context=service_context, storage_context=storage_context)},
+        retriever_dict={"vector": _load_vector_index_retriever(service_context=service_context, storage_context=storage_context)},
         node_dict=all_node_dict,
         verbose=True,
     )
@@ -88,8 +88,7 @@ def load_indices_and_query_engine() -> RetrieverQueryEngine:
     return query_engine
 
 
-
-def load_vector_index_retriever(service_context: ServiceContext, storage_context: StorageContext) -> VectorIndexRetriever:
+def _load_vector_index_retriever(service_context: ServiceContext, storage_context: StorageContext) -> VectorIndexRetriever:
     """Loading vector index retriever"""
     
     storage_indices = load_indices_from_storage(storage_context=storage_context, service_context=service_context)

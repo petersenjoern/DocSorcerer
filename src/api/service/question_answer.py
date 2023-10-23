@@ -12,12 +12,13 @@ def stream_response(response_iter: StreamingResponse) -> AsyncGenerator:
     yield f"\n\n"
 
     # finall return source node information.
-    source_data_str = format_response_source_nodes(response_iter.source_nodes)
+    source_data_str = _format_response_source_nodes(response_iter.source_nodes)
     yield f"Supporting evidence: \n\n"
     for evidence in source_data_str:
         yield f"{evidence}\n\n"
 
-def format_response_source_nodes(source_nodes: List[NodeWithScore]) -> List[str]:
+
+def _format_response_source_nodes(source_nodes: List[NodeWithScore]) -> List[str]:
     """Format source node information, so it can be streamed as strings"""
 
     source_node_ids = [n.node_id for n in source_nodes]
