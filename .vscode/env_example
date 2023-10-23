@@ -1,1 +1,1 @@
-PYTHONPATH=/path/to/DocSorcerer/src:/path/to/DocSorcerer/src/ingestion:/path/to/DocSorcerer/src/api:
+PYTHONPATH=/path/to/DocSorcerer/src:/path/to/DocSorcerer/src/ingestion:/path/to/DocSorcerer/src/api:/path/to/DocSorcerer/src/models:/path/to/DocSorcerer/src/storage

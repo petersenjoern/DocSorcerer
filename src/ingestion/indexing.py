@@ -13,21 +13,17 @@ from pymongo import MongoClient
 import weaviate
 from langchain.embeddings import HuggingFaceEmbeddings
 from llama_hub.file.image.base import ImageReader as ImageReaderForFlatPDF
+from models.language_models import get_llama2
+from llamaindex_storage import MONGO_DB_NAME, MONGO_HOST, MONGO_PORT, WEAVIATE_INDEX_NAME, set_storage_ctx
 from utils.pdf import PDFReaderCustom
-from llama_index.prompts import PromptTemplate
 from llama_index.schema import IndexNode
-from llama_index.embeddings.utils import EmbedType
-from llama_index.llms.custom import CustomLLM
-from llama_index.llms import HuggingFaceLLM
 
 from llama_index import (ServiceContext, SimpleDirectoryReader, VectorStoreIndex, get_response_synthesizer)
 from llama_index.callbacks import (CallbackManager,LlamaDebugHandler)
 from llama_index.embeddings.langchain import LangchainEmbedding
 from llama_index.indices.loading import load_indices_from_storage
 from llama_index.indices.prompt_helper import PromptHelper
-from llama_index.llms import LlamaCPP
-from llama_index.llms.llama_utils import (completion_to_prompt,
-                                          messages_to_prompt)
+
 from llama_index.node_parser import SimpleNodeParser
 from llama_index.node_parser.extractors import (MetadataExtractor,
                                                 QuestionsAnsweredExtractor,
@@ -37,33 +33,38 @@ from llama_index.readers.base import BaseReader
 from llama_index.readers.file.image_reader import ImageReader
 from llama_index.readers.file.docs_reader import DocxReader
 from llama_index.schema import Document, TextNode
-from llama_index.storage.docstore import MongoDocumentStore
-from llama_index.storage.index_store import MongoIndexStore
-from llama_index.storage.storage_context import StorageContext
 from llama_index.text_splitter.token_splitter import TokenTextSplitter
-from llama_index.vector_stores.weaviate import WeaviateVectorStore
 
 # TODO: move most of these to a cfg file
 # LLM Model CFG
-MODEL_NAME = "llama-2-13b-chat.gguf"
-MODEL_PATH = str(Path.cwd().joinpath("models", MODEL_NAME))
-CONTEXT_WINDOW = 3500
-NUM_OUTPUT = 596
+CONTEXT_WINDOW_INDEXING = 3500
+NUM_OUTPUT_INDEXING = 596
 CHUNK_SIZE = 1024
 
 # Embedding Model
-EMBED_MODEL_NAME = "BAAI/bge-small-en"
 EMBED_MODEL = LangchainEmbedding(
     HuggingFaceEmbeddings(
-        model_name=EMBED_MODEL_NAME,
+        model_name="BAAI/bge-small-en",
         model_kwargs={"device": "cuda"},
         encode_kwargs={'normalize_embeddings': False}
     )
 )
+# Prompt Helper - can help deal with LLM context window token limitations
+PROMPT_HELPER_INDEXING = PromptHelper(
+    context_window=CONTEXT_WINDOW_INDEXING,
+    num_output=NUM_OUTPUT_INDEXING,
+    chunk_overlap_ratio=0.1,
+    chunk_size_limit=CHUNK_SIZE
+)
 
 # LlamaIndex Callback
-CALLBACK_MANAGER = CallbackManager([LlamaDebugHandler(print_trace_on_end=True)])
+LLAMA_INDEX_CALLBACKS = CallbackManager([LlamaDebugHandler(print_trace_on_end=True)])
 
+
+BASE_NODE_PARSER = SimpleNodeParser.from_defaults(
+    text_splitter=TokenTextSplitter(separator=" ", chunk_size=CHUNK_SIZE, chunk_overlap=20),
+    callback_manager=LLAMA_INDEX_CALLBACKS
+)
 
 # Data
 DATA_PATH = Path.cwd().joinpath("data")
@@ -73,22 +74,13 @@ DATA_SOURCE_PATH = DATA_PATH.joinpath("source", "Leisure")
 DATA_METADATA_PATH = DATA_PATH.joinpath("indexing", "metadata_dicts.jsonl")
 NODE_REFERENCES_PATH = DATA_PATH.joinpath("indexing", "node_references.pickle")
 
+# Flags
+## TODO: use CLI flags instead
+PURGE_ALL = False
+
 # Weaviate
 WEAVIATE_HOST = "localhost"
 WEAVIATE_PORT = 8080
-WEAVIATE_INDEX_NAME = "Vectors"
-
-# Mongo DB
-MONGO_HOST = "localhost"
-MONGO_PORT = 27017
-MONGO_DB_NAME = "Stores"
-MONGO_INDEX_STORE_NAMESPACE = "IndexStore"
-MONGO_DOC_STORE_NAMESPACE = "DocStore"
-
-# Flags
-## TODO: use CLI flags instead
-PURGE_DATABASES = False
-
 
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 logging.getLogger().addHandler(logging.StreamHandler(stream=sys.stdout))
@@ -106,54 +98,42 @@ FILE_READER_CLS: Dict[str, Type[BaseReader]] = {
 def main() -> None:
     """Entry point for indexing"""
     
-    # llm defintion
-
     llm = get_llama2(
-        model_path=MODEL_PATH,
-        max_new_tokens=NUM_OUTPUT,
+        max_new_tokens=NUM_OUTPUT_INDEXING,
         model_temperature=0.1,
-        context_window=CONTEXT_WINDOW
+        context_window=CONTEXT_WINDOW_INDEXING
     )
-    #llm = get_huggingface_llm(
-    #    model_name="Writer/camel-5b-hf",
-    #    max_new_tokens=NUM_OUTPUT,
-    #    model_temperature=0.1,
-    #    context_window=CONTEXT_WINDOW
-    #)
 
     weaviate_client = weaviate.Client(url=f"http://{WEAVIATE_HOST}:{WEAVIATE_PORT}")
     mongodb_client = MongoClient(host=MONGO_HOST, port=MONGO_PORT)
     
-    service_context = set_service_ctx(llm=llm, embed_model=EMBED_MODEL, callback_manager=CALLBACK_MANAGER)
+    service_context = ServiceContext.from_defaults(
+        llm=llm,
+        chunk_size=CHUNK_SIZE,
+        callback_manager=LLAMA_INDEX_CALLBACKS,
+        embed_model=EMBED_MODEL,
+        prompt_helper=PROMPT_HELPER_INDEXING
+    )
     storage_context = set_storage_ctx(weaviate_client)
     storage_indices = load_indices_from_storage(storage_context=storage_context, service_context=service_context)
 
         
-    if PURGE_DATABASES:
-        purge_weaviate_schema(weaviate_client, WEAVIATE_INDEX_NAME)
-        purge_mongo_database(mongodb_client, MONGO_DB_NAME)
+    if PURGE_ALL:
+        purge_all_indices(weaviate_client, mongodb_client)
         purge_node_references(path=NODE_REFERENCES_PATH)
+
      
     documents = load_data_from_path(input_dir=DATA_SOURCE_PATH, collect_pages=True)
 
     # Filter out documents that already have been indexed; this is based on the document filesystem path location
     # Meaning, it is not recognised if the document on the filesystem has been modified after last ingestion
-    all_doc_ids_memory = [document.doc_id for document in documents]
-    all_doc_ids_store = get_doc_ids_in_store(weaviate_client, WEAVIATE_INDEX_NAME)
-    doc_ids_to_insert = records_to_insert(all_doc_ids_memory, all_doc_ids_store)
-    docs_to_insert = filter_documents_by_doc_ids(documents, doc_ids_to_insert)
-
-
-    base_node_parser = SimpleNodeParser.from_defaults(
-        text_splitter=TokenTextSplitter(separator=" ", chunk_size=CHUNK_SIZE, chunk_overlap=20),
-        callback_manager=CALLBACK_MANAGER
-    )
+    docs_to_insert = documents_to_insert(weaviate_client, documents)
 
 
     # document will be parsed into Node(s) with auto-generated TextNode(id_="") UUID
     # meaning that even though the document hasnt changed, the UUID for each Node(s) will be never the same
     # this means that the metadata from the MetadataExtractor id_ will not match the newly generated TextNode(id_="")  
-    base_nodes = base_node_parser.get_nodes_from_documents(documents=docs_to_insert, show_progress=True)
+    base_nodes = BASE_NODE_PARSER.get_nodes_from_documents(documents=docs_to_insert, show_progress=True)
 
     metadata_extractor = MetadataExtractor(
         extractors=[
@@ -162,59 +142,14 @@ def main() -> None:
         ],
     )
 
+    base_nodes_metadata_dicts = generate_metadata_from_base_nodes(base_nodes, metadata_extractor)
 
-    base_nodes_metadata_dicts = []
-    # we always want to append new metadata (never delete!), as we will match the metadata with the UUID ("id_" field)
-    try:
-        base_nodes_metadata_dicts=load_metadata_dicts(path=DATA_METADATA_PATH)
-    except FileNotFoundError:
-        logging.warning("You may have screwed up your references. ",
-                        "If this is the first time running the indexing you may be good, ",
-                        "Check if you have already a base_nodes_metadata_dicts in your DATA_METADATA_PATH.")
-        # raise Exception("There is no metadata for the base nodes (TextNode). Check the Path.")
 
-    for base_node in base_nodes:
-        # extractor.extract(nodes) is only return the extraction result, but loosing its metadata
-        # this loop is preserving metadata that is required later on (matching on node["id_"], required to be UUID)
-        metadata_dicts = metadata_extractor.extract([base_node])
-        metadata_dicts[0]["id_"] = base_node.id_
-        metadata_dicts[0]["ref_doc_id"] = base_node.ref_doc_id
-        base_nodes_metadata_dicts.extend(metadata_dicts)
-
-    save_metadata_dicts(path=DATA_METADATA_PATH, dicts=base_nodes_metadata_dicts)
-
-    # base_nodes_already_indexed = get_text_nodes_from_store(weaviate_client, WEAVIATE_INDEX_NAME)
-    # base_nodes.extend(base_nodes_already_indexed)
-    
-    
-    # all_nodes will consist eventually of all base_nodes (TextNode), linked to its metadata (IndexNode)
-    # loading all previous indexed TextNode and IndexNode into.
-    # The assumption is that these TextNode and IndexNode are still in the database, and we are appending to it below.
-    # This is for simplicity right now
-    # TODO: get actual TextNode and IndexNode from the database(s)
-    indexed_nodes =[]
-    if not PURGE_DATABASES:
-        try:
-            indexed_nodes = load_node_references(NODE_REFERENCES_PATH)
-        except FileNotFoundError:
-            logging.warning("You have screwed up and lost your references. ",
-                            "The retrieval of references from the DB is not supported yet. ",
-                            "Delete your base_nodes_metadata_dicts file and start over again.")
-    indexed_nodes_ids = [n.id_ for n in indexed_nodes]
-    nodes_to_be_indexed = copy.deepcopy(base_nodes)
-    nodes_to_be_indexed_ids = [n.id_ for n in nodes_to_be_indexed]
-    for metadata_dict in base_nodes_metadata_dicts:
-        # only add metadata to the Index for documents/nodes that are in memory
-        if (metadata_dict["id_"] not in indexed_nodes_ids) and (metadata_dict["id_"] in nodes_to_be_indexed_ids):
-            inode_q = IndexNode(
-                text=metadata_dict["questions_this_excerpt_can_answer"],
-                index_id=metadata_dict["id_"]
-            )
-            inode_s = IndexNode(
-                text=metadata_dict["section_summary"],
-                index_id=metadata_dict["id_"]
-            )
-            nodes_to_be_indexed.extend([inode_q, inode_s])
+    # "all_nodes" will consist eventually of all base_nodes (TextNode), linked to its metadata (IndexNode)
+    # The assumption is that TextNode and IndexNode are still in the database and mirror the objects in the
+    # object under "NODE_REFERENCES_PATH". We will append new Text- and IndexNode(s) to this object.
+    # TODO: get actual TextNode and IndexNode from the database(s) instead of  the object under the "NODE_REFERENCES_PATH"
+    indexed_nodes, nodes_to_be_indexed = separate_nodes_by_index_status(base_nodes, base_nodes_metadata_dicts)
     
    
 
@@ -233,16 +168,95 @@ def main() -> None:
     )
     storage_indices.extend([vector_store_index])
 
+    # Finally, after indexing the new nodes (TextNode and IndexNode), we want to refresh the object will all node references
+    # so that the object is reflecting the database status. This is a workaround for now.
     all_nodes: List[Union[IndexNode, TextNode]] = indexed_nodes + nodes_to_be_indexed
     save_node_references(NODE_REFERENCES_PATH, all_nodes)
 
+def separate_nodes_by_index_status(base_nodes: List[TextNode], base_nodes_metadata_dicts: List[Dict[str, str]]):
+    """By loading the existing node references, calculate which (new) nodes have to be indexed."""
+    indexed_nodes: List[Union[IndexNode, TextNode]] =[]
+    if not PURGE_ALL:
+        try:
+            indexed_nodes = load_node_references(NODE_REFERENCES_PATH)
+        except FileNotFoundError:
+            logging.warning("You have screwed up and lost your references. ",
+                            "The retrieval of references from the DB is not supported yet. ",
+                            "Delete your base_nodes_metadata_dicts file and start over again.")
+    indexed_nodes_ids = [n.id_ for n in indexed_nodes]
+    nodes_to_be_indexed = prepare_nodes_to_be_indexed(base_nodes, base_nodes_metadata_dicts, indexed_nodes_ids)
+    return indexed_nodes,nodes_to_be_indexed
 
-def save_node_references(path: Path, _dict: Dict[str, Union[TextNode, IndexNode]]) -> None:
+def prepare_nodes_to_be_indexed(base_nodes: List[TextNode], base_nodes_metadata_dicts: List[Dict[str, str]],
+                                indexed_nodes_ids: List[str]) -> List[Union[TextNode, IndexNode]]:
+    """Add metadata (IndexNode) to all nodes that still need to be indexed.
+    Avoid adding duplicated metadata by checking the indexed node ids"""
+    nodes_to_be_indexed = copy.deepcopy(base_nodes)
+    nodes_to_be_indexed_ids = [n.id_ for n in nodes_to_be_indexed]
+    for metadata_dict in base_nodes_metadata_dicts:
+        # only add metadata to the Index for documents/nodes that are in memory
+        if (metadata_dict["id_"] not in indexed_nodes_ids) and (metadata_dict["id_"] in nodes_to_be_indexed_ids):
+            inode_q = IndexNode(
+                text=metadata_dict["questions_this_excerpt_can_answer"],
+                index_id=metadata_dict["id_"]
+            )
+            inode_s = IndexNode(
+                text=metadata_dict["section_summary"],
+                index_id=metadata_dict["id_"]
+            )
+            nodes_to_be_indexed.extend([inode_q, inode_s])
+    return nodes_to_be_indexed
+
+def generate_metadata_from_base_nodes(base_nodes: List[TextNode], metadata_extractor: MetadataExtractor) -> List[Dict[str, str]]:
+    """Generate metadata (with help of an LLM) from base_nodes and append to a metadata dictionary."""
+
+    base_nodes_metadata_dicts = []
+    # we always want to append new metadata (never delete!), as we will match the metadata with the UUID ("id_" field)
+    try:
+        base_nodes_metadata_dicts=load_metadata_dicts(path=DATA_METADATA_PATH)
+    except FileNotFoundError:
+        logging.warning("You may have screwed up your references. ",
+                        "If this is the first time running the indexing you may be good, ",
+                        "Check if you have already a base_nodes_metadata_dicts in your DATA_METADATA_PATH.")
+
+    base_nodes_metadata_dicts = extract_metadata_from_nodes(base_nodes, metadata_extractor, base_nodes_metadata_dicts)
+    save_metadata_dicts(path=DATA_METADATA_PATH, dicts=base_nodes_metadata_dicts)
+    return base_nodes_metadata_dicts
+
+def extract_metadata_from_nodes(base_nodes: List[TextNode], metadata_extractor: MetadataExtractor,
+                                base_nodes_metadata_dicts: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """For every base_node extract metadata and append additional information, such as the id_ from the base_node to it."""
+    
+    for base_node in base_nodes:
+        # extractor.extract(nodes) is only return the extraction result, but loosing its metadata
+        # this loop is preserving metadata that is required later on (matching on node["id_"], required to be UUID)
+        metadata_dicts = metadata_extractor.extract([base_node])
+        metadata_dicts[0]["id_"] = base_node.id_
+        metadata_dicts[0]["ref_doc_id"] = base_node.ref_doc_id
+        base_nodes_metadata_dicts.extend(metadata_dicts)
+    return base_nodes_metadata_dicts
+
+def documents_to_insert(weaviate_client: weaviate.Client, documents: List[Document]) -> List[Document]:
+    """Based on doc_ids in memory and doc_ids in index, only return documents to be inserted."""
+    all_doc_ids_memory = [document.doc_id for document in documents]
+    all_doc_ids_store = get_doc_ids_in_store(weaviate_client, WEAVIATE_INDEX_NAME)
+    doc_ids_to_insert = records_to_insert(all_doc_ids_memory, all_doc_ids_store)
+    docs_to_insert = filter_documents_by_doc_ids(documents, doc_ids_to_insert)
+    return docs_to_insert
+
+def purge_all_indices(weaviate_client, mongodb_client):
+    """Purge all indices and document references."""
+
+    purge_weaviate_schema(weaviate_client, WEAVIATE_INDEX_NAME)
+    purge_mongo_database(mongodb_client, MONGO_DB_NAME)
+
+
+def save_node_references(path: Path, nodes: List[Union[TextNode, IndexNode]]) -> None:
     """Save dictionary with reference objects under path"""
     with open(path, 'wb') as handle:
-        pickle.dump(_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        pickle.dump(nodes, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
-def load_node_references(path: Path) -> Dict[str, Union[TextNode, IndexNode]]:
+def load_node_references(path: Path) -> List[Union[TextNode, IndexNode]]:
     """Load dictionary with reference objects from path"""
     with open(path, 'rb') as handle:
         return pickle.load(handle)
@@ -261,107 +275,6 @@ def load_metadata_dicts(path: str) -> List[Dict[str, str]]:
         json_list = list(fp)
         metadata_dicts = [json.loads(json_string) for json_string in json_list]
         return metadata_dicts
-
-def custom_completion_to_prompt(completion: str) -> str:
-    return completion_to_prompt(
-        completion,
-        system_prompt=(
-            "You are a Q&A assistant. Your goal is to answer questions as "
-            "accurately as possible is the instructions and context provided."
-        ),
-    )
-
-def get_llama2(model_path:str, max_new_tokens:int=256, model_temperature: int=0.1, context_window:int=3800) -> CustomLLM:
-    """Init llama-cpp-python https://github.com/abetlen/llama-cpp-python via llama_index.llms"""
-    
-    # llama2 has a context window of 4096 tokens
-    return LlamaCPP(
-        model_path=model_path,
-        context_window=context_window,
-        temperature=model_temperature,
-        max_new_tokens=max_new_tokens,
-        model_kwargs={"n_gpu_layers": 50, "n_batch": 8, "use_mlock": False},
-        messages_to_prompt=messages_to_prompt,
-        completion_to_prompt=custom_completion_to_prompt,
-        verbose=True)
-
-def get_huggingface_llm(model_name:str, max_new_tokens:int=256, model_temperature: int=0.1, context_window:int=2048) -> HuggingFaceLLM:
-    """Return a hugginface LLM"""
-
-    query_wrapper_prompt = PromptTemplate(
-        "Below is an instruction that describes a task. "
-        "Write a response that appropriately completes the request.\n\n"
-        "### Instruction:\n{query_str}\n\n### Response:"
-    )
-
-    return HuggingFaceLLM(
-        model_name=model_name,
-        tokenizer_name=model_name,
-        context_window=context_window,
-        max_new_tokens=max_new_tokens,
-        generate_kwargs={"temperature": model_temperature, "do_sample": True},
-        device_map="auto",
-        tokenizer_kwargs={"max_length": 2048},
-        query_wrapper_prompt=query_wrapper_prompt,
-        model_kwargs={"max_memory": {0: "18GB"}, "offload_folder": "/tmp/offload"}
-    )
-
-
-def set_service_ctx(
-        llm: Union[CustomLLM, HuggingFaceLLM],
-        embed_model: EmbedType, callback_manager: CallbackManager) -> ServiceContext:
-    """Set llamaindex service context"""
-    
-    service_context = ServiceContext.from_defaults(
-        llm=llm,
-        chunk_size=CHUNK_SIZE,
-        callback_manager=callback_manager,
-        embed_model=embed_model,
-        prompt_helper=PromptHelper(
-            context_window=CONTEXT_WINDOW,
-            num_output=NUM_OUTPUT,
-            chunk_overlap_ratio=0.2,
-            chunk_size_limit=CHUNK_SIZE
-        )
-    )
-    return service_context
-
-
-def load_weaviate_vector_store(client: weaviate.Client, index: str) -> WeaviateVectorStore:
-    """Initiate client connect to weaviate and load llamaindex vector store"""
-    
-    # embeddings and docs are stored within a Weaviate collection
-    return WeaviateVectorStore(weaviate_client=client, index_name=index)
-
-def load_mongo_index_store() -> MongoIndexStore:
-    """Load llamaindex mongo index store"""
-
-    return MongoIndexStore.from_host_and_port(
-        host=MONGO_HOST,
-        port=MONGO_PORT,
-        db_name=MONGO_DB_NAME,
-        namespace=MONGO_INDEX_STORE_NAMESPACE
-    )
-
-def load_mongo_document_store() -> MongoDocumentStore:
-    """Load llamaindex's mongo document store"""
-
-    return MongoDocumentStore.from_host_and_port(
-        host=MONGO_HOST,
-        port=MONGO_PORT,
-        db_name=MONGO_DB_NAME,
-        namespace=MONGO_DOC_STORE_NAMESPACE
-    )
-
-def set_storage_ctx(weaviate_client: weaviate.Client) -> StorageContext:
-    """Set llamaindex storage context"""
-    
-    # load storage context and index
-    return StorageContext.from_defaults(
-        vector_store=load_weaviate_vector_store(client=weaviate_client, index=WEAVIATE_INDEX_NAME),
-        index_store=load_mongo_index_store(),
-        docstore=load_mongo_document_store()
-    )
 
 def load_data_from_path(input_dir: Path, collect_pages: bool=True) -> List[Document]:
     """Custom loading data into llama index documents class"""
