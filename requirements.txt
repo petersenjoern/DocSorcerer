@@ -1,5 +1,5 @@
 # llama-index 
-llama-index==0.8.41
+llama-index==0.8.48
 
 # llama-hub
 llama-hub==0.0.26
