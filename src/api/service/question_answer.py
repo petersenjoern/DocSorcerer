@@ -20,8 +20,8 @@ def stream_response(response_iter: StreamingResponse) -> AsyncGenerator:
 def format_response_source_nodes(source_nodes: List[NodeWithScore]) -> List[str]:
     """Format source node information, so it can be streamed as strings"""
 
-    source_filename = [n.node.metadata["file_name"] for n in source_nodes]
-    source_page = [n.node.metadata["page_label"] for n in source_nodes]
+    source_node_ids = [n.node_id for n in source_nodes]
+    source_text = [n.text for n in source_nodes]
     source_relevance_score = [str(round(n.score,2)) for n in source_nodes]
-    source_data = list(zip(source_filename, source_page, source_relevance_score))
+    source_data = list(zip(source_node_ids, source_text, source_relevance_score))
     return [" ".join(tup) for tup in source_data]
