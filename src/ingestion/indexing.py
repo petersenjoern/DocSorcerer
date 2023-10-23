@@ -19,8 +19,6 @@ from llama_index.schema import IndexNode
 from llama_index.embeddings.utils import EmbedType
 from llama_index.llms.custom import CustomLLM
 from llama_index.llms import HuggingFaceLLM
-from llama_index.retrievers import RecursiveRetriever
-from llama_index.query_engine import RetrieverQueryEngine
 
 from llama_index import (ServiceContext, SimpleDirectoryReader, VectorStoreIndex, get_response_synthesizer)
 from llama_index.callbacks import (CallbackManager,LlamaDebugHandler)
@@ -151,8 +149,9 @@ def main() -> None:
         callback_manager=CALLBACK_MANAGER
     )
 
-    # this will auto-generate a new TextNode(id_="") UUID unfortunately
-    # meaning that even though the document hasnt changed, the UUID will be another one
+
+    # document will be parsed into Node(s) with auto-generated TextNode(id_="") UUID
+    # meaning that even though the document hasnt changed, the UUID for each Node(s) will be never the same
     # this means that the metadata from the MetadataExtractor id_ will not match the newly generated TextNode(id_="")  
     base_nodes = base_node_parser.get_nodes_from_documents(documents=docs_to_insert, show_progress=True)
 
@@ -176,7 +175,7 @@ def main() -> None:
 
     for base_node in base_nodes:
         # extractor.extract(nodes) is only return the extraction result, but loosing its metadata
-        # this loop is preserving metadata that is required later on (matching on node-ids, required to be UUID)
+        # this loop is preserving metadata that is required later on (matching on node["id_"], required to be UUID)
         metadata_dicts = metadata_extractor.extract([base_node])
         metadata_dicts[0]["id_"] = base_node.id_
         metadata_dicts[0]["ref_doc_id"] = base_node.ref_doc_id
@@ -209,13 +208,11 @@ def main() -> None:
         if (metadata_dict["id_"] not in indexed_nodes_ids) and (metadata_dict["id_"] in nodes_to_be_indexed_ids):
             inode_q = IndexNode(
                 text=metadata_dict["questions_this_excerpt_can_answer"],
-                index_id=metadata_dict["id_"],
-                node_id=f'{metadata_dict["id_"]}-questions'
+                index_id=metadata_dict["id_"]
             )
             inode_s = IndexNode(
                 text=metadata_dict["section_summary"],
-                index_id=metadata_dict["id_"],
-                node_id=f'{metadata_dict["id_"]}-summary'
+                index_id=metadata_dict["id_"]
             )
             nodes_to_be_indexed.extend([inode_q, inode_s])
     
@@ -417,7 +414,8 @@ def get_doc_ids_in_store(client: weaviate.Client, class_name: str) -> List[str]:
     except weaviate.UnexpectedStatusCodeException:
         return []
 
-    all_objects_store = client.data_object.get(class_name=class_name)
+    #TODO: make this smarter, to only return ids for unlimited amount of docs
+    all_objects_store = client.data_object.get(class_name=class_name, limit=10_000)
     all_doc_ids_store = [i["properties"]["doc_id"] for i in all_objects_store["objects"]]
     return all_doc_ids_store
 
