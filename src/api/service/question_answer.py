@@ -1,14 +1,25 @@
 """Services for question and answer endpoint."""
 
-from typing import AsyncGenerator, List
+from typing import AsyncGenerator, List, Union
 from llama_index.response.schema import StreamingResponse
 from llama_index.schema import NodeWithScore
+from llama_index.indices.base_retriever import BaseRetriever
+from llama_index.query_engine import RetrieverQueryEngine
+from llama_index.retrievers import VectorIndexRetriever
+from dto.node import NodeWithEvidence
 
 
 import repository.question_answer as repository_question_answer
 
 
-def answer_question(query_engine, question: str) -> AsyncGenerator:
+def evidence_for_answer(retriever: Union[VectorIndexRetriever, BaseRetriever], question: str) -> List[NodeWithEvidence]:
+    """Return source node information for question asked"""
+
+    source_nodes = repository_question_answer.retriever_get_nodes(retriever, question)
+    return _format_response_source_nodes(source_nodes)
+
+
+def answer_question(query_engine: RetrieverQueryEngine, question: str) -> AsyncGenerator:
     """Answer a question by calling the """
 
     response_iter = repository_question_answer.engine_run_query_with_question(query_engine, question)
@@ -22,18 +33,8 @@ def _stream_response(response_iter: StreamingResponse) -> AsyncGenerator:
         yield f"{text}"
     yield f"\n\n"
 
-    # finall return source node information.
-    source_data_str = _format_response_source_nodes(response_iter.source_nodes)
-    yield f"Supporting evidence: \n\n"
-    for evidence in source_data_str:
-        yield f"{evidence}\n\n"
 
+def _format_response_source_nodes(source_nodes: List[NodeWithScore]) -> List[NodeWithEvidence]:
+    """Format source node information to only return what is desired"""
 
-def _format_response_source_nodes(source_nodes: List[NodeWithScore]) -> List[str]:
-    """Format source node information, so it can be streamed as strings"""
-
-    source_node_ids = [n.node_id for n in source_nodes]
-    source_text = [n.text for n in source_nodes]
-    source_relevance_score = [str(round(n.score,2)) for n in source_nodes]
-    source_data = list(zip(source_node_ids, source_text, source_relevance_score))
-    return [" ".join(tup) for tup in source_data]
+    return [NodeWithEvidence(node_id=s.node_id, score=round(s.score, 3), text=s.text) for s in source_nodes]
