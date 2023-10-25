@@ -5,7 +5,7 @@ import streamlit as st
 import requests
 import random
 
-BASE_DOC_SCORCERER_URL = "http://localhost:8000"
+BASE_DOC_SORCERER_URL = "http://localhost:8000"
 PAGE_TITLE: str = "Welcome to the DocScorcerer"
 PAGE_ICON: str = "🤖"
 
@@ -24,7 +24,7 @@ WAITING_MESSAGES = [
 def _answer_question_streaming(session: requests.Session, question: str) -> Generator[str, str, None]:
     """Query backend API for generating an answer to the question in a streamed fashion"""
 
-    response = session.get(url=f"{BASE_DOC_SCORCERER_URL}/answer-question?question={question}", stream=True)
+    response = session.get(url=f"{BASE_DOC_SORCERER_URL}/answer-question?question={question}", stream=True)
     response.raise_for_status()
     for line in response.iter_content(chunk_size=1024):
         if line:
@@ -33,7 +33,7 @@ def _answer_question_streaming(session: requests.Session, question: str) -> Gene
 def _get_evidence_for_answer(session: requests.Session, question: str) -> Dict[str, Union[str, float]]:
     """Query backend API to obtain evidence documents for answer"""
 
-    response = session.get(url=f"{BASE_DOC_SCORCERER_URL}/answer-question-evidence?question={question}")
+    response = session.get(url=f"{BASE_DOC_SORCERER_URL}/answer-question-evidence?question={question}")
     response.raise_for_status()
     return response.json()
 

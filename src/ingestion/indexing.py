@@ -15,7 +15,7 @@ from pymongo import MongoClient
 from langchain.embeddings import HuggingFaceEmbeddings
 from llama_hub.file.image.base import ImageReader as ImageReaderForFlatPDF
 from models.language_models import get_llama2
-from llamaindex_storage import MONGO_HOST, MONGO_PORT, WEAVIATE_INDEX_NAME, purge_all_indices, set_storage_ctx
+from storage.llamaindex_storage import purge_dbs, set_storage_ctx
 from utils.pdf import PDFReaderCustom
 from llama_index.schema import IndexNode
 
@@ -35,27 +35,26 @@ from llama_index.readers.file.image_reader import ImageReader
 from llama_index.readers.file.docs_reader import DocxReader
 from llama_index.schema import Document, TextNode
 from llama_index.text_splitter.token_splitter import TokenTextSplitter
+from config import Settings
 
-# TODO: move most of these to a cfg file
-# LLM Model CFG
-CONTEXT_WINDOW_INDEXING = 3500
-NUM_OUTPUT_INDEXING = 596
-CHUNK_SIZE = 1024
+
+settings = Settings()
+
 
 # Embedding Model
 EMBED_MODEL = LangchainEmbedding(
     HuggingFaceEmbeddings(
-        model_name="BAAI/bge-small-en",
+        model_name=settings.embed.model_name,
         model_kwargs={"device": "cuda"},
         encode_kwargs={'normalize_embeddings': False}
     )
 )
 # Prompt Helper - can help deal with LLM context window token limitations
 PROMPT_HELPER_INDEXING = PromptHelper(
-    context_window=CONTEXT_WINDOW_INDEXING,
-    num_output=NUM_OUTPUT_INDEXING,
-    chunk_overlap_ratio=0.1,
-    chunk_size_limit=CHUNK_SIZE
+    context_window=settings.prompt_helper.context_window,
+    num_output=settings.prompt_helper.num_output,
+    chunk_overlap_ratio=settings.prompt_helper.chunk_overlap_ratio,
+    chunk_size_limit=settings.parser.chunk_size
 )
 
 # LlamaIndex Callback
@@ -63,7 +62,11 @@ LLAMA_INDEX_CALLBACKS = CallbackManager([LlamaDebugHandler(print_trace_on_end=Tr
 
 
 BASE_NODE_PARSER = SimpleNodeParser.from_defaults(
-    text_splitter=TokenTextSplitter(separator=" ", chunk_size=CHUNK_SIZE, chunk_overlap=20),
+    text_splitter=TokenTextSplitter(
+        separator=settings.parser.separator,
+        chunk_size=settings.parser.chunk_size,
+        chunk_overlap=settings.parser.chunk_overlap
+    ),
     callback_manager=LLAMA_INDEX_CALLBACKS
 )
 
@@ -79,9 +82,6 @@ NODE_REFERENCES_PATH = DATA_PATH.joinpath("indexing", "node_references.pickle")
 ## TODO: use CLI flags instead
 PURGE_ALL = False
 
-# Weaviate
-WEAVIATE_HOST = "localhost"
-WEAVIATE_PORT = 8080
 
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 logging.getLogger().addHandler(logging.StreamHandler(stream=sys.stdout))
@@ -100,17 +100,17 @@ def main() -> None:
     """Entry point for indexing"""
     
     llm = get_llama2(
-        max_new_tokens=NUM_OUTPUT_INDEXING,
-        model_temperature=0.1,
-        context_window=CONTEXT_WINDOW_INDEXING
+        max_new_tokens=settings.llm.context_window,
+        model_temperature=settings.llm.temperature,
+        context_window=settings.llm.num_output
     )
 
-    weaviate_client = weaviate.Client(url=f"http://{WEAVIATE_HOST}:{WEAVIATE_PORT}")
-    mongodb_client = MongoClient(host=MONGO_HOST, port=MONGO_PORT)
+    weaviate_client = weaviate.Client(url=f"http://{settings.db_vector.host}:{settings.db_vector.port}")
+    mongodb_client = MongoClient(host=settings.db_no_sql.host, port=settings.db_no_sql.port)
     
     service_context = ServiceContext.from_defaults(
         llm=llm,
-        chunk_size=CHUNK_SIZE,
+        chunk_size=settings.parser.chunk_size,
         callback_manager=LLAMA_INDEX_CALLBACKS,
         embed_model=EMBED_MODEL,
         prompt_helper=PROMPT_HELPER_INDEXING
@@ -120,7 +120,7 @@ def main() -> None:
 
         
     if PURGE_ALL:
-        purge_all_indices(weaviate_client, mongodb_client)
+        purge_dbs(weaviate_client, mongodb_client)
         purge_node_references(path=NODE_REFERENCES_PATH)
 
      
@@ -221,7 +221,7 @@ def documents_to_insert(weaviate_client: weaviate.Client, documents: List[Docume
     """Based on doc_ids in memory and doc_ids in index, only return documents to be inserted."""
 
     all_doc_ids_memory = [document.doc_id for document in documents]
-    all_doc_ids_store = _get_doc_ids_in_store(weaviate_client, WEAVIATE_INDEX_NAME)
+    all_doc_ids_store = _get_doc_ids_in_store(weaviate_client, settings.db_vector.collection.name)
     doc_ids_to_insert = _records_to_insert(all_doc_ids_memory, all_doc_ids_store)
     docs_to_insert = _filter_documents_by_doc_ids(documents, doc_ids_to_insert)
     return docs_to_insert
