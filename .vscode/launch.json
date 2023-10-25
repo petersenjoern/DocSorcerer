@@ -25,13 +25,13 @@
             ]
         },
         {
-            "name": "webapp",
+            "name": "client",
             "type": "python",
             "request": "launch",
             "module": "streamlit",
             "args": [
                 "run",
-                "src/webapp/run.py"
+                "src/client/run.py"
             ]
         }
     ]
