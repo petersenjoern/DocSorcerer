@@ -19,8 +19,9 @@ pytesseract==0.3.10
 # embeddings
 sentence-transformers==2.2.2
 
-# api
+# api and data models
 fastapi==0.103.2
+pydantic-settings==2.0.3
 
 # frontend
 streamlit==1.27.2
