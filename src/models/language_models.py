@@ -2,10 +2,12 @@
 
 from pathlib import Path
 
+import torch
 from llama_index.llms import HuggingFaceLLM, LlamaCPP
 from llama_index.llms.custom import CustomLLM
 from llama_index.llms.llama_utils import completion_to_prompt, messages_to_prompt
 from llama_index.prompts import PromptTemplate
+from transformers import BitsAndBytesConfig
 
 LANGUAGE_MODEL_PATH = Path.cwd().joinpath("models", "llama-2-13b-chat.gguf")
 
@@ -38,28 +40,58 @@ def custom_completion_to_prompt(completion: str) -> str:
     )
 
 
-def get_huggingface_llm(
-    model_name: str,
-    max_new_tokens: int = 256,
-    model_temperature: int = 0.1,
-    context_window: int = 2048,
-) -> HuggingFaceLLM:
-    """Return a hugginface LLM"""
+def get_zephyr(
+    max_new_tokens: int = 256, model_temperature: int = 0.1, context_window: int = 3800
+):
+    """Return HuggingfaceH4 zephyr-7b-alpha model"""
 
-    query_wrapper_prompt = PromptTemplate(
-        "Below is an instruction that describes a task. "
-        "Write a response that appropriately completes the request.\n\n"
-        "### Instruction:\n{query_str}\n\n### Response:"
+    quantization_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_use_double_quant=True,
     )
 
-    return HuggingFaceLLM(
-        model_name=model_name,
-        tokenizer_name=model_name,
+    def zepyhr_messages_to_prompt(messages):
+        prompt = ""
+        for message in messages:
+            if message.role == "system":
+                prompt += f"<|system|>\n{message.content}</s>\n"
+            elif message.role == "user":
+                prompt += f"<|user|>\n{message.content}</s>\n"
+            elif message.role == "assistant":
+                prompt += f"<|assistant|>\n{message.content}</s>\n"
+
+        # ensure we start with a system prompt, insert blank if needed
+        if not prompt.startswith("<|system|>\n"):
+            prompt = "<|system|>\n</s>\n" + prompt
+
+        # add final assistant prompt
+        prompt = prompt + "<|assistant|>\n"
+
+        return prompt
+
+    llm = HuggingFaceLLM(
+        model_name="HuggingFaceH4/zephyr-7b-alpha",
+        tokenizer_name="HuggingFaceH4/zephyr-7b-alpha",
+        query_wrapper_prompt=PromptTemplate(
+            "<|system|>\n</s>\n<|user|>\n{query_str}</s>\n<|assistant|>\n"
+        ),
         context_window=context_window,
         max_new_tokens=max_new_tokens,
-        generate_kwargs={"temperature": model_temperature, "do_sample": True},
+        model_kwargs={
+            "quantization_config": quantization_config,
+            "max_memory": {0: "20GB"},
+            "offload_folder": "/tmp/offload",
+        },
+        # tokenizer_kwargs={},
+        generate_kwargs={
+            "temperature": model_temperature,
+            "top_k": 50,
+            "top_p": 0.95,
+            "do_sample": True,
+        },
+        messages_to_prompt=zepyhr_messages_to_prompt,
         device_map="auto",
-        tokenizer_kwargs={"max_length": 2048},
-        query_wrapper_prompt=query_wrapper_prompt,
-        model_kwargs={"max_memory": {0: "18GB"}, "offload_folder": "/tmp/offload"},
     )
+    return llm

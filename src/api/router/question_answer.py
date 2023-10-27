@@ -5,22 +5,27 @@ from typing import List
 
 import service.question_answer as service_question_answer
 import weaviate
+from config import get_api_settings
 from dto.node import NodeWithEvidence
 from fastapi import APIRouter, FastAPI
 from fastapi.responses import StreamingResponse
-from llama_index import PromptHelper, ServiceContext, load_indices_from_storage
+from langchain.embeddings import HuggingFaceEmbeddings
+from language_models import get_zephyr
+from llama_index import (
+    LangchainEmbedding,
+    PromptHelper,
+    ServiceContext,
+    load_indices_from_storage,
+)
 from llama_index.callbacks import CallbackManager, LlamaDebugHandler
 from llama_index.retrievers import VectorIndexRetriever
 from query_engine import initialise_query_engine
-
-from config import get_api_settings
-from ingestion.indexing import EMBED_MODEL
-from models.language_models import get_llama2
 from storage.llamaindex_storage import set_storage_ctx
 
 LLAMA_INDEX_CALLBACKS_API = CallbackManager(
     [LlamaDebugHandler(print_trace_on_end=True)]
 )
+
 
 router = APIRouter()
 
@@ -33,7 +38,7 @@ async def lifespan(app: FastAPI):
 
     settings = get_api_settings()
 
-    llm = get_llama2(
+    llm = get_zephyr(
         max_new_tokens=settings.llm.num_output,
         model_temperature=settings.llm.temperature,
         context_window=settings.llm.context_window,
@@ -42,12 +47,17 @@ async def lifespan(app: FastAPI):
         llm=llm,
         chunk_size=settings.parser.chunk_size,
         callback_manager=LLAMA_INDEX_CALLBACKS_API,
-        embed_model=EMBED_MODEL,
+        embed_model=LangchainEmbedding(
+            HuggingFaceEmbeddings(
+                model_name=settings.embed.name,
+                model_kwargs={"device": "cuda"},
+                encode_kwargs={"normalize_embeddings": False},
+            )
+        ),
         prompt_helper=PromptHelper(
             context_window=settings.prompt_helper.context_window,
             num_output=settings.prompt_helper.num_output,
-            chunk_overlap_ratio=0.1,
-            chunk_size_limit=settings.parser.chunk_size,
+            chunk_overlap_ratio=settings.prompt_helper.chunk_overlap_ratio,
         ),
     )
 

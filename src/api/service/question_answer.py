@@ -34,9 +34,14 @@ def answer_question(
 def _stream_response(response_iter: StreamingResponse) -> AsyncGenerator:
     """Run query engine with question"""
 
-    for text in response_iter.response_gen:
-        yield f"{text}"
-    yield "\n\n"
+    try:
+        for text in response_iter.response_gen:
+            yield f"{text}"
+        yield "\n\n"
+    # if there is no attr response_gen, its very likely that the retriever couldnt find any node, hence its empty
+    # for now have this except clause:
+    except AttributeError:
+        yield "I cannot answer your question based on the data indexed."
 
 
 def _format_response_source_nodes(

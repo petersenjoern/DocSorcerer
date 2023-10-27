@@ -22,7 +22,7 @@ class Parser(BaseModel):
 
 
 class EmbedSettings(BaseModel):
-    model_name: str = Field(default="BAAI/bge-small-en")
+    name: str = Field(default="BAAI/bge-small-en-v1.5")
 
 
 # LLM and prompting related settings
@@ -33,7 +33,7 @@ class LLMSettings(BaseModel):
 
 
 class PromptHelperSettings(BaseModel):
-    context_window: int = Field(default=3800)
+    context_window: int = Field(default=3900)
     num_output: int = Field(default=256)
     chunk_overlap_ratio: float = Field(default=0.1)
 
