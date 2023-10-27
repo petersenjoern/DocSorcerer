@@ -46,7 +46,7 @@ settings = Settings()
 # Embedding Model
 EMBED_MODEL = LangchainEmbedding(
     HuggingFaceEmbeddings(
-        model_name=settings.embed.model_name,
+        model_name=settings.embed.name,
         model_kwargs={"device": "cuda"},
         encode_kwargs={"normalize_embeddings": False},
     )
@@ -122,9 +122,7 @@ def main() -> None:
         prompt_helper=PROMPT_HELPER_INDEXING,
     )
     storage_context = set_storage_ctx(weaviate_client)
-    storage_indices = load_indices_from_storage(
-        storage_context=storage_context, service_context=service_context
-    )
+    storage_indices = load_indices_from_storage(storage_context=storage_context)
 
     if PURGE_ALL:
         purge_dbs(weaviate_client, mongodb_client)

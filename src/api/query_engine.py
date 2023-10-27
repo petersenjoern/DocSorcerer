@@ -34,7 +34,7 @@ def initialise_query_engine(
         retriever=retriever_metadata,
         service_context=service_context,
         response_synthesizer=response_synthesizer,
-        node_postprocessors=[SimilarityPostprocessor(similarity_cutoff=0.75)],
+        node_postprocessors=[SimilarityPostprocessor(similarity_cutoff=0.70)],
         verbose=True,
         streaming=True,
         use_async=True,
