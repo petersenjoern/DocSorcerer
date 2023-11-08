@@ -1,5 +1,7 @@
 """Module related to handling storage used in indexing/API."""
 
+import logging
+
 import weaviate
 from config import Settings
 from llama_index.storage.docstore import MongoDocumentStore
@@ -10,11 +12,19 @@ from pymongo import MongoClient
 
 settings = Settings()
 
+logging.basicConfig(
+    filename="llamaindex_storage.log",
+    format="%(asctime)s - %(message)s",
+    level=logging.DEBUG,
+)
+logger = logging.getLogger(__name__)
+
 
 def set_storage_ctx(weaviate_client: weaviate.Client) -> StorageContext:
     """Set llamaindex storage context"""
 
     # load storage context and index
+    logger.info("Initiating StorageContext.")
     return StorageContext.from_defaults(
         vector_store=load_weaviate_vector_store(client=weaviate_client),
         index_store=load_mongo_index_store(),

@@ -5,7 +5,6 @@ import itertools
 import json
 import logging
 import pickle
-import sys
 from pathlib import Path
 from typing import Dict, List, Type, Union
 
@@ -85,8 +84,12 @@ NODE_REFERENCES_PATH = DATA_PATH.joinpath("indexing", "node_references.pickle")
 PURGE_ALL = False
 
 
-logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-logging.getLogger().addHandler(logging.StreamHandler(stream=sys.stdout))
+logging.basicConfig(
+    filename="indexing.log",
+    format="%(asctime)s - %(message)s",
+    level=logging.DEBUG,
+)
+logger = logging.getLogger(__name__)
 
 
 FILE_READER_CLS: Dict[str, Type[BaseReader]] = {
@@ -186,7 +189,7 @@ def main() -> None:
 def purge_node_references(path: Path) -> None:
     """Delete the pickle file on the path"""
 
-    if path.exists() and path.suffix == ".pickle":
+    if path.is_file() and path.suffix == ".pickle":
         path.unlink()
 
 
@@ -288,7 +291,7 @@ def generate_metadata_from_base_nodes(
     try:
         base_nodes_metadata_dicts = _load_metadata_dicts(path=DATA_METADATA_PATH)
     except FileNotFoundError:
-        logging.warning(
+        logger.warning(
             "You may have screwed up your references. ",
             "If this is the first time running the indexing you may be good, ",
             "Check if you have already a base_nodes_metadata_dicts in your DATA_METADATA_PATH.",
@@ -345,7 +348,7 @@ def separate_nodes_by_index_status(
         try:
             indexed_nodes = _load_node_references(NODE_REFERENCES_PATH)
         except FileNotFoundError:
-            logging.warning(
+            logger.warning(
                 "You have screwed up and lost your references. ",
                 "The retrieval of references from the DB is not supported yet. ",
                 "Delete your base_nodes_metadata_dicts file and start over again.",
