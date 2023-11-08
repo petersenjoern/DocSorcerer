@@ -18,7 +18,7 @@ def initialise_query_engine(
         service_context=service_context,
         streaming=True,
         use_async=True,
-        response_mode=ResponseMode.COMPACT,  # alternative: TREE_SUMMARIZE
+        response_mode=ResponseMode.COMPACT,  # alternative: REFINE, TREE_SUMMARIZE, NO_TEXT, ACCUMULATE, COMPACT_ACCUMULATE
     )
 
     nodes_indexed = _load_node_references(NODE_REFERENCES_PATH)

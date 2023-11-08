@@ -2,12 +2,10 @@
 
 from pathlib import Path
 
-import torch
 from llama_index.llms import HuggingFaceLLM, LlamaCPP
 from llama_index.llms.custom import CustomLLM
 from llama_index.llms.llama_utils import completion_to_prompt, messages_to_prompt
 from llama_index.prompts import PromptTemplate
-from transformers import BitsAndBytesConfig
 
 LANGUAGE_MODEL_PATH = Path.cwd().joinpath("models", "llama-2-13b-chat.gguf")
 
@@ -43,14 +41,7 @@ def custom_completion_to_prompt(completion: str) -> str:
 def get_zephyr(
     max_new_tokens: int = 256, model_temperature: int = 0.1, context_window: int = 3800
 ):
-    """Return HuggingfaceH4 zephyr-7b-alpha model"""
-
-    quantization_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_use_double_quant=True,
-    )
+    """Return zephyr"""
 
     def zepyhr_messages_to_prompt(messages):
         prompt = ""
@@ -72,23 +63,23 @@ def get_zephyr(
         return prompt
 
     llm = HuggingFaceLLM(
-        model_name="HuggingFaceH4/zephyr-7b-alpha",
-        tokenizer_name="HuggingFaceH4/zephyr-7b-alpha",
+        model_name="TheBloke/zephyr-7B-beta-GPTQ",
+        tokenizer_name="TheBloke/zephyr-7B-beta-GPTQ",
         query_wrapper_prompt=PromptTemplate(
             "<|system|>\n</s>\n<|user|>\n{query_str}</s>\n<|assistant|>\n"
         ),
         context_window=context_window,
         max_new_tokens=max_new_tokens,
         model_kwargs={
-            "quantization_config": quantization_config,
             "max_memory": {0: "20GB"},
             "offload_folder": "/tmp/offload",
         },
         # tokenizer_kwargs={},
         generate_kwargs={
             "temperature": model_temperature,
-            "top_k": 50,
+            "top_k": 40,
             "top_p": 0.95,
+            "repetition_penalty": 1.1,
             "do_sample": True,
         },
         messages_to_prompt=zepyhr_messages_to_prompt,

@@ -5,7 +5,6 @@ from typing import List
 
 import service.question_answer as service_question_answer
 import weaviate
-from config import get_api_settings
 from dto.node import NodeWithEvidence
 from fastapi import APIRouter, FastAPI
 from fastapi.responses import StreamingResponse
@@ -20,6 +19,8 @@ from llama_index import (
 from llama_index.callbacks import CallbackManager, LlamaDebugHandler
 from llama_index.retrievers import VectorIndexRetriever
 from query_engine import initialise_query_engine
+
+from config import get_api_settings
 from storage.llamaindex_storage import set_storage_ctx
 
 LLAMA_INDEX_CALLBACKS_API = CallbackManager(
@@ -72,7 +73,7 @@ async def lifespan(app: FastAPI):
     vector_index_retriever = VectorIndexRetriever(
         index=storage_indices[0],
         similarity_top_k=2,
-        vector_store_query_mode="default",  # 'hybrid' only working with weaviate
+        vector_store_query_mode="hybrid",  # 'hybrid' only working with weaviate
         alpha=0.8,  # alpha = 0 -> bm25, alpha=1 -> vector search, only working with hybrid
         service_context=service_context,
     )

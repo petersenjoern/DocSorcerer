@@ -13,6 +13,14 @@
             "justMyCode": true
         },
         {
+            "name": "evaluation - retrival",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/ingestion/retrieval_evaluation.py",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
             "name": "api",
             "type": "python",
             "request": "launch",
